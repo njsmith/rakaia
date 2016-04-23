@@ -6,6 +6,8 @@ from functools import wraps
 import aiohttp
 from aiohttp import web
 
+from .tailable_file import TailableFileWriter
+
 # Mechanism for tasks to prove that they are who they say they are
 class _Mint:
     def __init__(self):
@@ -24,75 +26,21 @@ class _Mint:
 
 MINT = _Mint()
 
-class LogInFlight:
-    def __init__(self, tmpdir, identifier):
-        self._identifier = identifier
-
-    def append(self, chunk):
-        # save chunk and fire off event for any readers
-
-    async def finalize(self):
-        # upload to blob storage
-
-    async def
-        # delete from tmpdir
-
-# want the get_log thing to hand out an async stream
-# maybe asyncio.StreamReader
-#   https://docs.python.org/3/library/asyncio-stream.html
-# or maybe aiohttp.streams.StreamReader
-
 def validate_task_id(handler):
     @wraps(handler)
-    async def handler_with_validated_task_id(request, task_id):
+    async def handler_with_validated_task_id(request):
         task_id = request.match_info['task_id']
         task_token = request.match_info["task_token"]
         if not MINT.validate(task_id, task_token):
-            raise web.HTTPUnauthorized("invalid task_token")
+            raise web.HTTPUnauthorized(reason="invalid task_token")
         return (await handler(request, task_id))
+    return handler_with_validated_task_id
 
-@validate_task_id
-async def log_put(request, task_id):
-    # if there's already a log, error out
-    # otherwise, create one
-    # wake up everyone who was waiting for this to even exist
-    # write everything over
-    # save the final thing to blob storage
-    log = LogInFlight(TMPDIR, identifier)
-    logs_in_flight[identifier] = log
-    async for chunk in request.content.iter_any():
-        log.append(chunk)
-    await log.finalize()
-    del logs_in_flight[identifier]
-
-    # FIXME: scan for "headline" markers and update the task status with them
-    # (ideally with some API to stream this to listeners too)
-    # break into lines, with some care to handle lines that fall across
-    # chunks, and process each line in order...
-    # I guess we can most cleanly do this from another async for loop.
-    # or just do it in the original loop above
-    # FIXME: make this robust against very very long lines that trickle in one
-    # byte at a time (like: "......" in tests). Specifically, not quadratic.
-    # XX alternatively, aiohttp.stream.StreamReader already has equivalent
-    # logic.
-    # well... the StreamReader logic is way more complicated, with limits and
-    # all kinds of things
-    trailing = BytesIO()
-    async for chunk in log:
-        assert chunk
-        lines = chunk.split(b"\n")
-        trailing.write(lines[0])
-        # Cases:
-        # - chunk has no newline -> just append to trailing and we're done
-        # - chunk has a newline: trailing is finished
-        if len(lines) == 1:
-            continue
-        else:
-            lines[0] = trailing.value()
-            trailing = BytesIO()
-            trailing.write(lines.pop(-1))
-            for line in lines:
-                ...
+# FIXME: temporary for testing
+async def token_for_task_id(request):
+    task_id = request.match_info["task_id"]
+    token = MINT.mint_token(task_id)
+    return web.Response(body=token.encode("ascii"))
 
 # Rackspace doesn't have any py3 api to cloud files + CDN
 # the openstack sdk (https://pypi.python.org/pypi/openstacksdk) does claim to
@@ -102,55 +50,60 @@ async def log_put(request, task_id):
 # set once on the container (= bucket)?
 
 # abstract interface
-class BlobStorage:
-    def __init__(self, credentials, bucket, whatever):
-        ...
+# class BlobStorage:
+#     def __init__(self, credentials, bucket, whatever):
+#         ...
 
-    async def add(self, name, file_handle):
-        ...
-        return public_url
+#     async def add(self, name, file_handle):
+#         ...
+#         return public_url
 
 
-class StreamingLogAsyncIter:
-    def __init__(self, condition, file_handle, max_chunk_size=65536):
-        self._condition = condition
-        self._file_handle = file_handle
+TMPDIR = "/home/njs/rakaia/tmp/"
+LOGS = {}
 
-    async def __aiter__(self):
-        return self
+@validate_task_id
+async def log_put(request, task_id):
+    # Could already be there if anyone is blocked waiting to read it
+    if task_id not in LOGS:
+        LOGS[task_id] = TailableFileWriter(os.path.join(TMPDIR, task_id))
+    writer = LOGS[task_id]
+    print("uploading for {}".format(task_id))
+    # XX if client drops connection, then this just hangs forever :-(
+    async for chunk in request.content.iter_any():
+        print("got chunk ({} bytes)".format(len(chunk)))
+        writer.write(chunk)
+    print("done")
+    writer.close()
+    # FIXME: once finished, upload to blob storage and remove from disk
+    return web.Response(body=b"thanks")
 
-    def _file_size(self):
-        return os.fstat(self._file_handle.fileno()).st_size
-
-    async def __anext__(self):
-        size = self._file_size()
-        if size == self._file_handle.tell():
-            await self._condition.acquire()
-            await self._condition.wait()
-            self._condition.release()
-        chunk = self._file_handle.read(max_chunk_size)
-        if not chunk:
-            raise AsyncStopIteration
-        self._bytes_returned += len(chunk)
-        return chunk
-
-async def log_get(request):
-    task_id = request.match_info['task_id']
-    # if it's already in blob storage, just redirect
-    response = web.StreamResponse()
-    response.enable_compression()
-    response.headers["foo"] = "bar"
-    await response.prepare()
-    async for chunk in stream.iter_any():
+async def copy_logs_to_http(writer, response):
+    async for chunk in writer.aiter_any():
         response.write(chunk)
         await response.drain()
     await response.write_eof()
-    # otherwise wait for log to start existing
-    # then stream it out bit by bit
+
+async def log_get(request):
+    task_id = request.match_info['task_id']
+    if task_id not in LOGS:
+        LOGS[task_id] = TailableFileWriter(os.path.join(TMPDIR, task_id))
+    writer = LOGS[task_id]
+
+    response = web.StreamResponse()
+    response.enable_compression()
+    response.headers["Content-Type"] = "text/plain; charset=utf-8"
+    await response.prepare(request)
+    async for chunk in writer.aiter_any():
+        response.write(chunk)
+        await response.drain()
+    await response.write_eof()
+    return response
 
 app = web.Application()
+app.router.add_route("GET", "/_fixme/token/{task_id:.+}", token_for_task_id)
 app.router.add_route("GET", "/log/{task_id:.+}", log_get)
 app.router.add_route("PUT", "/_task_api/{task_token}/log/{task_id:.+}", log_put)
 
 if __name__ == "__main__":
-    web.run_app
+    web.run_app(app)
