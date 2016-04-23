@@ -6,7 +6,7 @@ from itertools import count
 import pytest
 
 from rakaia.util import LocklessCondition
-from rakaia.logs import TailableFileWriter
+from rakaia.tailable_file import TailableFileWriter
 
 @pytest.mark.asyncio
 async def test_tailable_file(event_loop, tmpdir):
