@@ -5,7 +5,6 @@ from itertools import count
 
 import pytest
 
-from rakaia.util import LocklessCondition
 from rakaia.tailable_file import TailableFileWriter
 
 @pytest.mark.asyncio
@@ -23,10 +22,9 @@ async def test_tailable_file(event_loop, tmpdir):
         async for chunk in writer.aiter_any():
             print("Got: {!r}".format(chunk))
             await q.put(chunk)
-        await q.put(None)
 
     chunks1 = asyncio.Queue(loop=event_loop)
-    event_loop.create_task(read_chunks(chunks1))
+    task1 = event_loop.create_task(read_chunks(chunks1))
 
     assert (await chunks1.get()) == b"1"
     assert chunks1.empty()
@@ -37,7 +35,7 @@ async def test_tailable_file(event_loop, tmpdir):
     assert chunks1.empty()
 
     chunks2 = asyncio.Queue(loop=event_loop)
-    event_loop.create_task(read_chunks(chunks2))
+    task2 = event_loop.create_task(read_chunks(chunks2))
 
     all2 = b""
     all2 += await chunks2.get()
@@ -45,8 +43,8 @@ async def test_tailable_file(event_loop, tmpdir):
 
     writer.close()
 
-    assert (await chunks1.get()) is None
-    assert (await chunks2.get()) is None
+    await task1
+    await task2
 
     all3 = b""
     async for chunk in writer.aiter_any():
@@ -85,34 +83,32 @@ async def test_tailable_file_stresstest(event_loop, tmpdir):
                 await asyncio.sleep(0.01)
 
     counter = count()
-    running = set()
-    condition = LocklessCondition()
 
     async def read_items(aiter, out_list):
         token = next(counter)
         print("-> Entering {}".format(token))
-        running.add(token)
         my_list = []
         out_list.append(my_list)
         async for item in aiter:
             print("  {}: got item ({} bytes)".format(token, len(item)))
             my_list.append(item)
         print("-> Leaving {}".format(token))
-        running.remove(token)
-        condition.notify_all()
 
     chunk_lists = []
     line_lists = []
 
+    tasks = []
+    def schedule_some():
+        for ait, lists in [(writer.aiter_any(), chunk_lists),
+                           (writer.aiter_lines(), line_lists)]:
+            tasks.append(event_loop.create_task(read_items(ait, lists)))
+
     await write_chunks(10)
-    event_loop.create_task(read_items(writer.aiter_any(), chunk_lists))
-    event_loop.create_task(read_items(writer.aiter_lines(), line_lists))
+    schedule_some()
     await write_chunks(10)
-    event_loop.create_task(read_items(writer.aiter_any(), chunk_lists))
-    event_loop.create_task(read_items(writer.aiter_lines(), line_lists))
+    schedule_some()
     await write_chunks(10)
-    event_loop.create_task(read_items(writer.aiter_any(), chunk_lists))
-    event_loop.create_task(read_items(writer.aiter_lines(), line_lists))
+    schedule_some()
     await write_chunks(10)
     # make sure there's some data remaining to be processed when unlink is
     # called
@@ -120,13 +116,12 @@ async def test_tailable_file_stresstest(event_loop, tmpdir):
     gold.write(b"asdf")
     print("Closing")
     writer.close()
-    event_loop.create_task(read_items(writer.aiter_any(), chunk_lists))
-    event_loop.create_task(read_items(writer.aiter_lines(), line_lists))
+    schedule_some()
     writer.unlink()
 
-    while running:
-        print("Done writing, waiting for {} to exit".format(len(running)))
-        await condition.wait()
+    print("Done writing, waiting for {} to exit".format(len(tasks)))
+    for task in tasks:
+        await task
 
     for chunk_list in chunk_lists:
         assert b"".join(chunk_list) == gold.getvalue()
