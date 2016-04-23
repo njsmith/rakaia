@@ -28,6 +28,7 @@
 
 import warnings
 from functools import wraps
+from types import coroutine
 
 __all__ = ["yield_", "async_generator"]
 
@@ -35,22 +36,18 @@ class YieldWrapper:
     def __init__(self, payload):
         self.payload = payload
 
-class YieldAwaitable:
-    def __init__(self, payload):
-        self._payload = payload
-        self._awaited = False
+# The magic @coroutine decorator is how you write the bottom level of
+# coroutine stacks -- 'async def' can only use 'await' = yield from; but
+# eventually we must bottom out in a @coroutine that calls plain 'yield'.
+@coroutine
+def _yield_(value):
+    yield YieldWrapper(value)
 
-    def __await__(self):
-        self._awaited = True
-        yield YieldWrapper(self._payload)
-
-    def __del__(self):
-        if not self._awaited:
-            warnings.warn(RuntimeWarning(
-                "result of yield_(...) was never awaited"))
-
-def yield_(value):
-    return YieldAwaitable(value)
+# But we wrap the bare @coroutine version in an async def, because async def
+# has the magic feature that users can get warnings messages if they forget to
+# use 'await'.
+async def yield_(value):
+    await _yield_(value)
 
 # This is the awaitable / iterator returned from asynciter.__anext__()
 class ANextIter:
