@@ -15,6 +15,15 @@ async def double(ait):
         await yield_(value * 2)
         await asyncio.sleep(0.001)
 
+class HasAsyncGenMethod:
+    def __init__(self, factor):
+        self._factor = factor
+
+    @async_generator
+    async def async_multiplied(self, ait):
+        async for value in ait:
+            await yield_(value * self._factor)
+
 # like list(it) but works on async iterators
 async def collect(ait):
     items = []
@@ -24,6 +33,10 @@ async def collect(ait):
 
 @pytest.mark.asyncio
 async def test_async_generator():
-    assert (await collect(async_range(10))) == list(range(10))
-    assert (await collect(double(async_range(10)))
-            == [0, 2, 4, 6, 8, 10, 12, 14, 16, 18])
+    assert await collect(async_range(10)) == list(range(10))
+    assert (await collect(double(async_range(5)))
+            == [0, 2, 4, 6, 8])
+
+    tripler = HasAsyncGenMethod(3)
+    assert (await collect(tripler.async_multiplied(async_range(5)))
+            == [0, 3, 6, 9, 12])
