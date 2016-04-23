@@ -1,3 +1,31 @@
+# In python we have:
+#   functions
+#   iterators
+#   generators as a convenient way to implement iterators like functions
+#   async functions
+#   async iterators
+#   async generators as a convenient ... wait, no, this doesn't exist
+#
+# The only built-in way to make an async iterator is to manually implement
+# __aiter__ and __anext__. This sucks -- have you ever thought "well, I could
+# use a generator... instead I'm going to manually define a class with
+# __iter__ and __next__ (and send and throw and close)"? Of course not,
+# generators do the same thing but are way easier.
+#
+# So, here's how you define an async generator:
+#
+# from this_file import async_generator, yield_
+#
+# @async_generator
+# async def double_all(ait):
+#     # you can use async constructs like in any async def function
+#     async for x in ait:
+#         # where in a normal generator you'd write
+#         #   yield foo
+#         # instead write
+#         #   await yield_(foo)
+#         await yield_(2 * x)
+
 import warnings
 from functools import wraps
 
