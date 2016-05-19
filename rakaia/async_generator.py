@@ -49,6 +49,16 @@ def _yield_(value):
 async def yield_(value):
     await _yield_(value)
 
+# Sneaky trick: we *don't* have to decorate this with @async_generator or
+# anything like that, because unlike a real 'yield', our yield_ will actually
+# propagate out *through* our caller to *their* @async_generator, so it's like
+# this async for loop happens directly inside the body of our caller. (If we
+# wanted to support 'asend' / 'athrow', similar to how real 'yield from'
+# forwards 'send' / 'throw', then life would be much more complicated.)
+async def yield_from_(aiter):
+    async for item in aiter:
+        await yield_(item)
+
 # This is the awaitable / iterator returned from asynciter.__anext__()
 class ANextIter:
     def __init__(self, it):

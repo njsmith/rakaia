@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from rakaia.async_generator import async_generator, yield_
+from rakaia.async_generator import async_generator, yield_, yield_from_
 
 @async_generator
 async def async_range(count):
@@ -40,3 +40,16 @@ async def test_async_generator():
     tripler = HasAsyncGenMethod(3)
     assert (await collect(tripler.async_multiplied(async_range(5)))
             == [0, 3, 6, 9, 12])
+
+# Test yield_from_
+@async_generator
+async def async_range_twice(count):
+    await yield_from_(async_range(count))
+    await yield_(None)
+    await yield_from_(async_range(count))
+
+@pytest.mark.asyncio
+async def test_async_yield_from_():
+    assert await collect(async_range_twice(3)) == [
+        0, 1, 2, None, 0, 1, 2,
+    ]
