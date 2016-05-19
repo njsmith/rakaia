@@ -14,4 +14,4 @@ rakaia
            :alt: Documentation Status
 
 
-Rakaia: a braided river
+Rakaia: braided flow
